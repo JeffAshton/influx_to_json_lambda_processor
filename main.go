@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/parsers/influx"
 	"github.com/influxdata/telegraf/plugins/serializers/json"
 )
@@ -27,6 +30,33 @@ type kinesisResponse struct {
 	Records []kinesisEventResponse `json:"records"`
 }
 
+var measurementWhitelist map[string]bool
+
+func init() {
+
+	whitelist := os.Getenv("MEASUREMENTS_WHITELIST")
+	if len(whitelist) > 0 {
+
+		measurementWhitelist := make(map[string]bool)
+
+		names := strings.Split(whitelist, ",")
+		for _, name := range names {
+			measurementWhitelist[name] = true
+		}
+	}
+}
+
+func shouldProcess(m telegraf.Metric) bool {
+
+	if len(measurementWhitelist) == 0 {
+		return true
+	}
+
+	measurementName := m.Name()
+	_, ok := measurementWhitelist[measurementName]
+	return ok
+}
+
 func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, error) {
 
 	handler := influx.NewMetricHandler()
@@ -40,13 +70,21 @@ func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, e
 		metrics, parseErr := parser.Parse(record.Data)
 		if parseErr == nil {
 
-			jsonBytes, jsonErr := serializer.Serialize(metrics[0])
-			if jsonErr == nil {
+			metric := metrics[0]
 
-				responseRecords[index] = kinesisEventResponse{record.RecordID, "Ok", jsonBytes}
+			if shouldProcess(metric) {
+
+				jsonBytes, jsonErr := serializer.Serialize(metric)
+
+				if jsonErr == nil {
+					responseRecords[index] = kinesisEventResponse{record.RecordID, "Ok", jsonBytes}
+
+				} else {
+					responseRecords[index] = kinesisEventResponse{record.RecordID, "ProcessingFailed", nil}
+				}
 
 			} else {
-				responseRecords[index] = kinesisEventResponse{record.RecordID, "ProcessingFailed", nil}
+				responseRecords[index] = kinesisEventResponse{record.RecordID, "Dropped", nil}
 			}
 
 		} else {
