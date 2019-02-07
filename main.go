@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/parsers/influx"
 	"github.com/influxdata/telegraf/plugins/serializers/json"
 )
@@ -37,24 +37,32 @@ func init() {
 	whitelist := os.Getenv("MEASUREMENTS_WHITELIST")
 	if len(whitelist) > 0 {
 
-		measurementWhitelist := make(map[string]bool)
+		measurementWhitelist = make(map[string]bool)
 
 		names := strings.Split(whitelist, ",")
 		for _, name := range names {
 			measurementWhitelist[name] = true
 		}
+
+		fmt.Print("Measurement Whitelist")
+		seperator := ": "
+		for key := range measurementWhitelist {
+			fmt.Print(seperator)
+			fmt.Print(key)
+			seperator = ", "
+		}
+		fmt.Println()
 	}
 }
 
-func shouldProcess(m telegraf.Metric) bool {
+func shouldProcess(metricName string) bool {
 
 	if len(measurementWhitelist) == 0 {
 		return true
 	}
 
-	measurementName := m.Name()
-	_, ok := measurementWhitelist[measurementName]
-	return ok
+	process := measurementWhitelist[metricName]
+	return process
 }
 
 func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, error) {
@@ -63,6 +71,7 @@ func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, e
 	parser := influx.NewParser(handler)
 	serializer, _ := json.NewSerializer(0)
 
+	processed := make(map[string]int)
 	responseRecords := make([]kinesisEventResponse, len(kinesisEvent.Records))
 
 	for index, record := range kinesisEvent.Records {
@@ -71,13 +80,15 @@ func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, e
 		if parseErr == nil {
 
 			metric := metrics[0]
+			metricName := metric.Name()
 
-			if shouldProcess(metric) {
+			if shouldProcess(metricName) {
 
 				jsonBytes, jsonErr := serializer.Serialize(metric)
 
 				if jsonErr == nil {
 					responseRecords[index] = kinesisEventResponse{record.RecordID, "Ok", jsonBytes}
+					processed[metricName]++
 
 				} else {
 					responseRecords[index] = kinesisEventResponse{record.RecordID, "ProcessingFailed", nil}
@@ -93,6 +104,8 @@ func handler(ctx context.Context, kinesisEvent kinesisEvent) (kinesisResponse, e
 	}
 
 	response := kinesisResponse{responseRecords}
+	fmt.Println("Processed", processed)
+
 	return response, nil
 }
 
